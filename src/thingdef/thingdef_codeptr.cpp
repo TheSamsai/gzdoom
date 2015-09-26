@@ -1320,6 +1320,7 @@ enum FP_Flags
 {
 	FPF_AIMATANGLE = 1,
 	FPF_TRANSFERTRANSLATION = 2,
+	FPF_NOAUTOAIM = 4,
 };
 DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_FireCustomMissile)
 {
@@ -1358,7 +1359,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_FireCustomMissile)
 		// Temporarily adjusts the pitch
 		fixed_t SavedPlayerPitch = self->pitch;
 		self->pitch -= pitch;
-		AActor * misl=P_SpawnPlayerMissile (self, x, y, z, ti, shootangle, &linetarget);
+		AActor * misl=P_SpawnPlayerMissile (self, x, y, z, ti, shootangle, &linetarget, NULL, false, (Flags & FPF_NOAUTOAIM) != 0);
 		self->pitch = SavedPlayerPitch;
 
 		// automatic handling of seeker missiles
@@ -4672,7 +4673,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_WolfAttack)
 
 DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Warp)
 {
-	ACTION_PARAM_START(7);
+	ACTION_PARAM_START(8);
 
 	ACTION_PARAM_INT(destination_selector, 0);
 	ACTION_PARAM_FIXED(xofs, 1);
@@ -4681,6 +4682,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Warp)
 	ACTION_PARAM_ANGLE(angle, 4);
 	ACTION_PARAM_INT(flags, 5);
 	ACTION_PARAM_STATE(success_state, 6);
+	ACTION_PARAM_FIXED(heightoffset,7)
 	
 	AActor *reference;
 	
@@ -4700,7 +4702,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Warp)
 		return;
 	}
 
-	if (P_Thing_Warp(self, reference, xofs, yofs, zofs, angle, flags))
+	if (P_Thing_Warp(self, reference, xofs, yofs, zofs, angle, flags, heightoffset))
 	{
 		if (success_state)
 		{
@@ -5070,7 +5072,6 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_DropItem)
 // A_SetSpeed
 //
 //==========================================================================
-
 DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetSpeed)
 {
 	ACTION_PARAM_START(2);
@@ -5086,6 +5087,28 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetSpeed)
 	}
 	
 	ref->Speed = speed;
+}
+
+//==========================================================================
+//
+// A_SetFloatSpeed
+//
+//==========================================================================
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetFloatSpeed)
+{
+	ACTION_PARAM_START(2);
+	ACTION_PARAM_FIXED(speed, 0);
+	ACTION_PARAM_INT(ptr, 1);
+
+	AActor *ref = COPY_AAPTR(self, ptr);
+
+	if (!ref)
+	{
+		ACTION_SET_RESULT(false);
+		return;
+	}
+
+	ref->FloatSpeed = speed;
 }
 
 //===========================================================================
@@ -5764,6 +5787,25 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_JumpIfHigherOrLower)
 		ACTION_JUMP(low);
 }
 
+//===========================================================================
+// A_SetSpecies(str species, ptr)
+//
+// Sets the species of the calling actor('s pointer).
+//===========================================================================
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetSpecies)
+{
+	ACTION_PARAM_START(2);
+	ACTION_PARAM_NAME(species, 0);
+	ACTION_PARAM_INT(ptr, 1);
+	AActor *mobj = COPY_AAPTR(self, ptr);
+	if (!mobj)
+	{
+		ACTION_SET_RESULT(false);
+		return;
+	}
+
+	mobj->Species = species;
+}
 
 //===========================================================================
 //
@@ -5803,3 +5845,4 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetRipMax)
 	ACTION_PARAM_INT(max, 0);
 	self->RipLevelMax = max;
 }
+

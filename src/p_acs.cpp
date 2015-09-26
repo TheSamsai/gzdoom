@@ -75,6 +75,7 @@
 #include "actorptrselect.h"
 #include "farchive.h"
 #include "decallib.h"
+#include "version.h"
 
 #include "g_shared/a_pickups.h"
 
@@ -1417,7 +1418,7 @@ FBehavior *FBehavior::StaticLoadModule (int lumpnum, FileReader *fr, int len)
 	else
 	{
 		delete behavior;
-		Printf(TEXTCOLOR_RED "%s: invalid ACS module", Wads.GetLumpFullName(lumpnum));
+		Printf(TEXTCOLOR_RED "%s: invalid ACS module\n", Wads.GetLumpFullName(lumpnum));
 		return NULL;
 	}
 }
@@ -5862,6 +5863,7 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 			int flags = args[5];
 			const char *statename = argCount > 6 ? FBehavior::StaticLookupString(args[6]) : "";
 			bool exact = argCount > 7 ? !!args[7] : false;
+			fixed_t heightoffset = argCount > 8 ? args[8] : 0;
 
 			FState *state = argCount > 6 ? activator->GetClass()->ActorInfo->FindStateByString(statename, exact) : 0;
 
@@ -5879,7 +5881,7 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 			if (!reference)
 				return false;
 
-			if (P_Thing_Warp(activator, reference, xofs, yofs, zofs, angle, flags))
+			if (P_Thing_Warp(activator, reference, xofs, yofs, zofs, angle, flags, heightoffset))
 			{
 				if (state && argCount > 6)
 				{
@@ -6031,6 +6033,7 @@ int DLevelScript::RunScript ()
 	int sp = 0;
 	int *pc = this->pc;
 	ACSFormat fmt = activeBehavior->GetFormat();
+	FBehavior* const savedActiveBehavior = activeBehavior;
 	unsigned int runaway = 0;	// used to prevent infinite loops
 	int pcd;
 	FString work;
@@ -6064,6 +6067,7 @@ int DLevelScript::RunScript ()
 		{
 		default:
 			Printf ("Unknown P-Code %d in %s\n", pcd, ScriptPresentation(script).GetChars());
+			activeBehavior = savedActiveBehavior;
 			// fall through
 		case PCD_TERMINATE:
 			DPrintf ("%s finished\n", ScriptPresentation(script).GetChars());
@@ -7270,9 +7274,9 @@ int DLevelScript::RunScript ()
 			sp--;
 			break;
 
-		case PCD_DROP:
 		case PCD_SETRESULTVALUE:
 			resultValue = STACK(1);
+		case PCD_DROP: //fall through.
 			sp--;
 			break;
 
@@ -8879,7 +8883,22 @@ scriptwait:
 			break;
 
 		case PCD_STRLEN:
-			STACK(1) = SDWORD(strlen(FBehavior::StaticLookupString (STACK(1))));
+			{
+				const char *str = FBehavior::StaticLookupString(STACK(1));
+				if (str != NULL)
+				{
+					STACK(1) = SDWORD(strlen(str));
+					break;
+				}
+
+				static bool StrlenInvalidPrintedAlready = false;
+				if (!StrlenInvalidPrintedAlready)
+				{
+					Printf(PRINT_BOLD, "Warning: ACS function strlen called with invalid string argument.\n");
+					StrlenInvalidPrintedAlready = true;
+				}
+				STACK(1) = 0;
+			}
 			break;
 
 		case PCD_GETCVAR:
@@ -9339,6 +9358,10 @@ scriptwait:
 			}
 			break;
 
+		case PCD_CONSOLECOMMAND:
+			Printf (TEXTCOLOR_RED GAMENAME " doesn't support execution of console commands from scripts\n");
+			sp -= 3;
+			break;
  		}
  	}
 
