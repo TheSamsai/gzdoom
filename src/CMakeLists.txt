@@ -188,6 +188,7 @@ else( WIN32 )
 			if( GTK2_FOUND )
 				set( ZDOOM_LIBS ${ZDOOM_LIBS} ${GTK2_LIBRARIES} )
 				include_directories( ${GTK2_INCLUDE_DIRS} )
+				link_directories( ${GTK2_LIBRARY_DIRS} )
 			else( GTK2_FOUND )
 				set( NO_GTK ON )
 			endif( GTK2_FOUND )
@@ -449,6 +450,22 @@ else( SSE_MATTERS )
 	set( BACKPATCH 0 )
 endif( SSE_MATTERS )
 
+if( X64 )
+	set( HAVE_MMX 1 )
+else( X64 )
+	set( SAFE_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} )
+
+	if( ZD_CMAKE_COMPILER_IS_GNUCXX_COMPATIBLE )
+		set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mmmx")
+	endif( ZD_CMAKE_COMPILER_IS_GNUCXX_COMPATIBLE )
+
+	CHECK_CXX_SOURCE_COMPILES("#include <mmintrin.h>
+		int main(void) { __m64 v = _m_from_int(0); }"
+		HAVE_MMX)
+
+	set( CMAKE_CXX_FLAGS ${SAFE_CMAKE_CXX_FLAGS} )
+endif( X64 )
+
 # Set up flags for GCC
 
 if( ZD_CMAKE_COMPILER_IS_GNUCXX_COMPATIBLE )
@@ -508,6 +525,11 @@ endif( NOT STRNICMP_EXISTS )
 if( NOT MSVC )
 	add_definitions( -D__forceinline=inline )
 endif( NOT MSVC )
+
+# Fix stat in v140_xp (broken in RTM and Update 1 so far)
+if( MSVC AND MSVC_VERSION EQUAL 1900 AND CMAKE_GENERATOR_TOOLSET STREQUAL "v140_xp" )
+	add_definitions( -D_stat64i32=VS14Stat )
+endif( MSVC AND MSVC_VERSION EQUAL 1900 AND CMAKE_GENERATOR_TOOLSET STREQUAL "v140_xp" )
 
 if( UNIX )
 	CHECK_LIBRARY_EXISTS( rt clock_gettime "" CLOCK_GETTIME_IN_RT )
@@ -576,10 +598,6 @@ endif( NOT DYN_FLUIDSYNTH )
 
 # Start defining source files for ZDoom
 set( PLAT_WIN32_SOURCES
-	gl/hqnx_asm/hq2x_asm.cpp
-	gl/hqnx_asm/hq3x_asm.cpp
-	gl/hqnx_asm/hq4x_asm.cpp
-	gl/hqnx_asm/hqnx_asm_Image.cpp
 	win32/eaxedit.cpp
 	win32/fb_d3d9.cpp
 	win32/fb_d3d9_wipe.cpp
@@ -662,6 +680,25 @@ else( WIN32 )
 	set( SYSTEM_SOURCES ${PLAT_POSIX_SOURCES} ${PLAT_SDL_SOURCES} )
 	set( OTHER_SYSTEM_SOURCES ${PLAT_WIN32_SOURCES} ${PLAT_OSX_SOURCES} ${PLAT_COCOA_SOURCES} )
 endif( WIN32 )
+
+if( HAVE_MMX )
+	add_definitions( -DHAVE_MMX=1 )
+
+	set( SYSTEM_SOURCES ${SYSTEM_SOURCES}
+		gl/hqnx_asm/hq2x_asm.cpp
+		gl/hqnx_asm/hq3x_asm.cpp
+		gl/hqnx_asm/hq4x_asm.cpp
+		gl/hqnx_asm/hqnx_asm_Image.cpp)
+
+	if( ZD_CMAKE_COMPILER_IS_GNUCXX_COMPATIBLE )
+		set_source_files_properties(
+			gl/hqnx_asm/hq2x_asm.cpp
+			gl/hqnx_asm/hq3x_asm.cpp
+			gl/hqnx_asm/hq4x_asm.cpp
+			gl/textures/gl_hqresize.cpp
+			PROPERTIES COMPILE_FLAGS "-mmmx" )
+	endif( ZD_CMAKE_COMPILER_IS_GNUCXX_COMPATIBLE )
+endif( HAVE_MMX )
 
 if( NOT ASM_SOURCES )
 	set( ASM_SOURCES "" )
@@ -762,6 +799,7 @@ file( GLOB HEADER_FILES
 	gl/models/*.h
 	gl/renderer/*.h
 	gl/scene/*.h
+	gl/stereo3d/*.h
 	gl/shaders/*.h
 	gl/system/*.h
 	gl/textures/*.h
@@ -941,6 +979,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
 	nodebuild_extract.cpp
 	nodebuild_gl.cpp
 	nodebuild_utility.cpp
+	pathexpander.cpp
 	p_3dfloors.cpp
 	p_3dmidtex.cpp
 	p_acs.cpp
@@ -1020,6 +1059,8 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
 	wi_stuff.cpp
 	zstrformat.cpp
 	zstring.cpp
+	GuillotineBinPack.cpp
+	SkylineBinPack.cpp
 	g_doom/a_doommisc.cpp
 	g_heretic/a_hereticmisc.cpp
 	g_hexen/a_hexenmisc.cpp
@@ -1120,6 +1161,11 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
 	gl/scene/gl_walls_draw.cpp
 	gl/scene/gl_vertex.cpp
 	gl/scene/gl_spritelight.cpp
+	gl/stereo3d/gl_stereo3d.cpp
+	gl/stereo3d/gl_stereo_cvars.cpp
+	gl/stereo3d/gl_stereo_leftright.cpp
+	gl/stereo3d/scoped_view_shifter.cpp
+	gl/stereo3d/gl_anaglyph.cpp
 	gl/dynlights/gl_dynlight.cpp
 	gl/dynlights/gl_glow.cpp
 	gl/dynlights/gl_dynlight1.cpp
@@ -1174,6 +1220,7 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
 	sound/music_fluidsynth_mididevice.cpp
 	sound/music_softsynth_mididevice.cpp
 	sound/music_timidity_mididevice.cpp
+	sound/music_wildmidi_mididevice.cpp
 	sound/music_win_mididevice.cpp
 	sound/oalsound.cpp
 	sound/sndfile_decoder.cpp
@@ -1217,6 +1264,11 @@ add_executable( zdoom WIN32 MACOSX_BUNDLE
 	timidity/playmidi.cpp
 	timidity/resample.cpp
 	timidity/timidity.cpp
+	wildmidi/file_io.cpp
+	wildmidi/gus_pat.cpp
+	wildmidi/reverb.cpp
+	wildmidi/wildmidi_lib.cpp
+	wildmidi/wm_error.cpp
 	xlat/parse_xlat.cpp
 	fragglescript/t_fspic.cpp
 	fragglescript/t_func.cpp
@@ -1354,6 +1406,8 @@ source_group("Audio Files\\OPL Synth" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURC
 source_group("Audio Files\\OPL Synth\\DOSBox" FILES oplsynth/dosbox/opl.cpp oplsynth/dosbox/opl.h)
 source_group("Audio Files\\Timidity\\Headers" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/timidity/.+\\.h$")
 source_group("Audio Files\\Timidity\\Source" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/timidity/.+\\.cpp$")
+source_group("Audio Files\\WildMidi\\Headers" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/wildmidi/.+\\.h$")
+source_group("Audio Files\\WildMidi\\Source" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/wildmidi/.+\\.cpp$")
 source_group("Decorate++" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/thingdef/.+")
 source_group("FraggleScript" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/fragglescript/.+")
 source_group("Games\\Doom Game" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/g_doom/.+")
@@ -1371,6 +1425,7 @@ source_group("OpenGL Renderer\\HQ Resize Assembly version" REGULAR_EXPRESSION "^
 source_group("OpenGL Renderer\\Models" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/models/.+")
 source_group("OpenGL Renderer\\Renderer" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/renderer/.+")
 source_group("OpenGL Renderer\\Scene" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/scene/.+")
+source_group("OpenGL Renderer\\Stereo3D" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/stereo3d/.+")
 source_group("OpenGL Renderer\\Shaders" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/shaders/.+")
 source_group("OpenGL Renderer\\System" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/system/.+")
 source_group("OpenGL Renderer\\Textures" REGULAR_EXPRESSION "^${CMAKE_CURRENT_SOURCE_DIR}/gl/textures/.+")

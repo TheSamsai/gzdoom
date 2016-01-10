@@ -191,6 +191,10 @@ void AActor::Serialize (FArchive &arc)
 		<< tics
 		<< state
 		<< Damage;
+	if (SaveVersion >= 4530)
+	{
+		P_SerializeTerrain(arc, floorterrain);
+	}
 	if (SaveVersion >= 3227)
 	{
 		arc << projectileKickback;
@@ -3452,7 +3456,7 @@ void AActor::Tick ()
 
 				if (player != NULL)
 				{
-					int scrolltype = sec->special & 0xff;
+					int scrolltype = sec->special;
 
 					if (scrolltype >= Scroll_North_Slow &&
 						scrolltype <= Scroll_SouthWest_Fast)
@@ -4035,6 +4039,7 @@ AActor *AActor::StaticSpawn (const PClass *type, fixed_t ix, fixed_t iy, fixed_t
 		{
 			actor->floorsector = actor->Sector;
 			actor->floorpic = actor->floorsector->GetTexture(sector_t::floor);
+			actor->floorterrain = actor->floorsector->GetTerrain(sector_t::floor);
 			actor->ceilingsector = actor->Sector;
 			actor->ceilingpic = actor->ceilingsector->GetTexture(sector_t::ceiling);
 		}
@@ -4046,6 +4051,7 @@ AActor *AActor::StaticSpawn (const PClass *type, fixed_t ix, fixed_t iy, fixed_t
 	else
 	{
 		actor->floorpic = actor->Sector->GetTexture(sector_t::floor);
+		actor->floorterrain = actor->Sector->GetTerrain(sector_t::floor);
 		actor->floorsector = actor->Sector;
 		actor->ceilingpic = actor->Sector->GetTexture(sector_t::ceiling);
 		actor->ceilingsector = actor->Sector;
@@ -4339,7 +4345,7 @@ void AActor::AdjustFloorClip ()
 		sector_t *hsec = m->m_sector->GetHeightSec();
 		if (hsec == NULL && m->m_sector->floorplane.ZatPoint (x, y) == z)
 		{
-			fixed_t clip = Terrains[TerrainTypes[m->m_sector->GetTexture(sector_t::floor)]].FootClip;
+			fixed_t clip = Terrains[m->m_sector->GetTerrain(sector_t::floor)].FootClip;
 			if (clip < shallowestclip)
 			{
 				shallowestclip = clip;
@@ -4424,7 +4430,7 @@ APlayerPawn *P_SpawnPlayer (FPlayerStart *mthing, int playernum, int flags)
 		( gameaction != ga_worlddone ) &&
 		( p->mo != NULL ) && 
 		( !(p->mo->Sector->Flags & SECF_NORESPAWN) ) &&
-		( (p->mo->Sector->special & 255) != Damage_InstantDeath ))
+		( p->mo->Sector->damageamount < TELEFRAG_DAMAGE ))	// this really should be a bit smarter...
 	{
 		spawn_x = p->mo->x;
 		spawn_y = p->mo->y;
@@ -4674,10 +4680,10 @@ AActor *P_SpawnMapThing (FMapThing *mthing, int position)
 	}
 
 	// copy args to mapthing so that we have them in one place for the rest of this function	
-	if (mentry->ArgsDefined)
+	if (mentry->ArgsDefined > 0)
 	{
 		if (mentry->Type!= NULL) mthing->special = mentry->Special;
-		memcpy(mthing->args, mentry->Args, sizeof(mthing->args));
+		memcpy(mthing->args, mentry->Args, sizeof(mthing->args[0]) * mentry->ArgsDefined);
 	}
 
 	int pnum = -1;
@@ -4917,6 +4923,7 @@ AActor *P_SpawnMapThing (FMapThing *mthing, int position)
 	mobj->SpawnPoint[2] = mthing->z;
 	mobj->SpawnAngle = mthing->angle;
 	mobj->SpawnFlags = mthing->flags;
+	if (mthing->FloatbobPhase >= 0 && mthing->FloatbobPhase < 64) mobj->FloatBobPhase = mthing->FloatbobPhase;
 	if (mthing->gravity < 0) mobj->gravity = -mthing->gravity;
 	else if (mthing->gravity > 0) mobj->gravity = FixedMul(mobj->gravity, mthing->gravity);
 	else mobj->flags &= ~MF_NOGRAVITY;
@@ -5302,13 +5309,13 @@ void P_RipperBlood (AActor *mo, AActor *bleeder)
 
 int P_GetThingFloorType (AActor *thing)
 {
-	if (thing->floorpic.isValid())
+	if (thing->floorterrain >= 0)
 	{		
-		return TerrainTypes[thing->floorpic];
+		return thing->floorterrain;
 	}
 	else
 	{
-		return TerrainTypes[thing->Sector->GetTexture(sector_t::floor)];
+		return thing->Sector->GetTerrain(sector_t::floor);
 	}
 }
 
@@ -5319,7 +5326,7 @@ int P_GetThingFloorType (AActor *thing)
 // Returns true if hit liquid and splashed, false if not.
 //---------------------------------------------------------------------------
 
-bool P_HitWater (AActor * thing, sector_t * sec, fixed_t x, fixed_t y, fixed_t z, bool checkabove, bool alert)
+bool P_HitWater (AActor * thing, sector_t * sec, fixed_t x, fixed_t y, fixed_t z, bool checkabove, bool alert, bool force)
 {
 	if (thing->flags3 & MF3_DONTSPLASH)
 		return false;
@@ -5361,30 +5368,34 @@ bool P_HitWater (AActor * thing, sector_t * sec, fixed_t x, fixed_t y, fixed_t z
 	}
 #endif
 
-	for(unsigned int i=0;i<sec->e->XFloor.ffloors.Size();i++)
-	{		
-		F3DFloor * rover = sec->e->XFloor.ffloors[i];
-		if (!(rover->flags & FF_EXISTS)) continue;
-		fixed_t planez = rover->top.plane->ZatPoint(x, y);
-		if (z > planez - FRACUNIT/2 && z < planez + FRACUNIT/2)	// allow minor imprecisions
+	// 'force' means, we want this sector's terrain, no matter what.
+	if (!force)
+	{
+		for (unsigned int i = 0; i<sec->e->XFloor.ffloors.Size(); i++)
 		{
-			if (rover->flags & (FF_SOLID|FF_SWIMMABLE) )
+			F3DFloor * rover = sec->e->XFloor.ffloors[i];
+			if (!(rover->flags & FF_EXISTS)) continue;
+			fixed_t planez = rover->top.plane->ZatPoint(x, y);
+			if (z > planez - FRACUNIT / 2 && z < planez + FRACUNIT / 2)	// allow minor imprecisions
 			{
-				terrainnum = TerrainTypes[*rover->top.texture];
-				goto foundone;
+				if (rover->flags & (FF_SOLID | FF_SWIMMABLE))
+				{
+					terrainnum = rover->model->GetTerrain(rover->top.isceiling);
+					goto foundone;
+				}
 			}
+			planez = rover->bottom.plane->ZatPoint(x, y);
+			if (planez < z && !(planez < thing->floorz)) return false;
 		}
-		planez = rover->bottom.plane->ZatPoint(x, y);
-		if (planez < z && !(planez < thing->floorz)) return false;
 	}
 	hsec = sec->GetHeightSec();
-	if (hsec == NULL || !(hsec->MoreFlags & SECF_CLIPFAKEPLANES))
+	if (force || hsec == NULL || !(hsec->MoreFlags & SECF_CLIPFAKEPLANES))
 	{
-		terrainnum = TerrainTypes[sec->GetTexture(sector_t::floor)];
+		terrainnum = sec->GetTerrain(sector_t::floor);
 	}
 	else
 	{
-		terrainnum = TerrainTypes[hsec->GetTexture(sector_t::floor)];
+		terrainnum = hsec->GetTerrain(sector_t::floor);
 	}
 foundone:
 
@@ -5402,7 +5413,7 @@ foundone:
 
 	// Don't splash for living things with small vertical velocities.
 	// There are levels where the constant splashing from the monsters gets extremely annoying
-	if ((thing->flags3&MF3_ISMONSTER || thing->player) && thing->velz >= -6*FRACUNIT)
+	if (((thing->flags3&MF3_ISMONSTER || thing->player) && thing->velz >= -6*FRACUNIT) && !force)
 		return Terrains[terrainnum].IsLiquid;
 
 	splash = &Splashes[splashnum];
@@ -6467,25 +6478,25 @@ void PrintMiscActorInfo(AActor *query)
 
 		Printf("%s @ %p has the following flags:\n   flags: %x", query->GetTag(), query, query->flags.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags));
+			if (query->flags & ActorFlags::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags));
 		Printf("\n   flags2: %x", query->flags2.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags2 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags2));
+			if (query->flags2 & ActorFlags2::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags2));
 		Printf("\n   flags3: %x", query->flags3.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags3 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags3));
+			if (query->flags3 & ActorFlags3::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags3));
 		Printf("\n   flags4: %x", query->flags4.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags4 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags4));
+			if (query->flags4 & ActorFlags4::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags4));
 		Printf("\n   flags5: %x", query->flags5.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags5 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags5));
+			if (query->flags5 & ActorFlags5::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags5));
 		Printf("\n   flags6: %x", query->flags6.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags6 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags6));
+			if (query->flags6 & ActorFlags6::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags6));
 		Printf("\n   flags7: %x", query->flags7.GetValue());
 		for (flagi = 0; flagi <= 31; flagi++)
-			if (query->flags7 & 1<<flagi) Printf(" %s", FLAG_NAME(1<<flagi, flags7));
+			if (query->flags7 & ActorFlags7::FromInt(1<<flagi)) Printf(" %s", FLAG_NAME(1<<flagi, flags7));
 		Printf("\nBounce flags: %x\nBounce factors: f:%f, w:%f", 
 			query->BounceFlags.GetValue(), FIXED2FLOAT(query->bouncefactor),
 			FIXED2FLOAT(query->wallbouncefactor));

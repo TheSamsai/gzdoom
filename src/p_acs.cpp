@@ -75,6 +75,7 @@
 #include "actorptrselect.h"
 #include "farchive.h"
 #include "decallib.h"
+#include "p_terrain.h"
 #include "version.h"
 
 #include "g_shared/a_pickups.h"
@@ -131,6 +132,16 @@ enum
 	ARMORINFO_MAXABSORB,
 	ARMORINFO_MAXFULLABSORB,
 	ARMORINFO_ACTUALSAVEAMOUNT,
+};
+
+// PickActor
+// [JP] I've renamed these flags to something else to avoid confusion with the other PAF_ flags
+enum
+{
+//	PAF_FORCETID,
+//	PAF_RETURNTID
+	PICKAF_FORCETID = 1,
+	PICKAF_RETURNTID = 2,
 };
 
 struct CallReturn
@@ -1254,7 +1265,7 @@ static int UseInventory (AActor *activator, const char *type)
 //
 //============================================================================
 
-static int CheckInventory (AActor *activator, const char *type)
+static int CheckInventory (AActor *activator, const char *type, bool max)
 {
 	if (activator == NULL || type == NULL)
 		return 0;
@@ -1265,11 +1276,26 @@ static int CheckInventory (AActor *activator, const char *type)
 	}
 	else if (stricmp (type, "Health") == 0)
 	{
+		if (max)
+		{
+			if (activator->IsKindOf (RUNTIME_CLASS (APlayerPawn)))
+				return static_cast<APlayerPawn *>(activator)->MaxHealth;
+			else
+				return activator->SpawnHealth();
+		}
 		return activator->health;
 	}
 
 	const PClass *info = PClass::FindClass (type);
 	AInventory *item = activator->FindInventory (info);
+
+	if (max)
+	{
+		if (item)
+			return item->MaxAmount;
+		else
+			return ((AInventory *)GetDefaultByType (info))->MaxAmount;
+	}
 	return item ? item->Amount : 0;
 }
 
@@ -3365,6 +3391,14 @@ int DLevelScript::DoSpawn (int type, fixed_t x, fixed_t y, fixed_t z, int tid, i
 
 	if (info != NULL)
 	{
+		info = info->GetReplacement ();
+
+		if ((GetDefaultByType (info)->flags3 & MF3_ISMONSTER) &&
+			((dmflags & DF_NO_MONSTERS) || (level.flags2 & LEVEL2_NOMONSTERS)))
+		{
+			return 0;
+		}
+
 		actor = Spawn (info, x, y, z, ALLOW_REPLACE);
 		if (actor != NULL)
 		{
@@ -4424,6 +4458,9 @@ enum EACSFunctions
 	ACSF_GetActorRoll,
 	ACSF_QuakeEx,
 	ACSF_Warp,					// 92
+	ACSF_GetMaxInventory,
+	ACSF_SetSectorDamage,
+	ACSF_SetSectorTerrain,
 	
 	/* Zandronum's - these must be skipped when we reach 99!
 	-100:ResetMap(0),
@@ -5297,6 +5334,7 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, SDWORD *args, const 
 			ClipRectWidth = argCount > 2 ? args[2] : 0;
 			ClipRectHeight = argCount > 3 ? args[3] : 0;
 			WrapWidth = argCount > 4 ? args[4] : 0;
+			HandleAspect = argCount > 5 ? !!args[5] : true;
 			break;
 
 		case ACSF_SetHUDWrapWidth:
@@ -5362,6 +5400,7 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, SDWORD *args, const 
 				FName damagetype	= argCount > 5 && args[5]? FName(FBehavior::StaticLookupString(args[5])) : NAME_None;
 				fixed_t	range		= argCount > 6 && args[6]? args[6] : MISSILERANGE;
 				int flags			= argCount > 7 && args[7]? args[7] : 0;
+				int pufftid			= argCount > 8 && args[8]? args[8] : 0;
 
 				int fhflags = 0;
 				if (flags & FHF_NORANDOMPUFFZ) fhflags |= LAF_NORANDOMPUFFZ;
@@ -5369,7 +5408,12 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, SDWORD *args, const 
 
 				if (args[0] == 0)
 				{
-					P_LineAttack(activator, angle, range, pitch, damage, damagetype, pufftype, fhflags);
+					AActor *puff = P_LineAttack(activator, angle, range, pitch, damage, damagetype, pufftype, fhflags);
+					if (puff != NULL && pufftid != 0)
+					{
+						puff->tid = pufftid;
+						puff->AddToHash();
+					}
 				}
 				else
 				{
@@ -5378,7 +5422,12 @@ int DLevelScript::CallFunction(int argCount, int funcIndex, SDWORD *args, const 
 
 					while ((source = it.Next()) != NULL)
 					{
-						P_LineAttack(source, angle, range, pitch, damage, damagetype, pufftype, fhflags);
+						AActor *puff = P_LineAttack(source, angle, range, pitch, damage, damagetype, pufftype, fhflags);
+						if (puff != NULL && pufftid != 0)
+						{
+							puff->tid = pufftid;
+							puff->AddToHash();
+						}
 					}
 				}
 			}
@@ -5761,9 +5810,9 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 					return 0;
 				}
 
-				DWORD actorMask = MF_SHOOTABLE;
+				ActorFlags actorMask = MF_SHOOTABLE;
 				if (argCount >= 6) {
-					actorMask = args[5];
+					actorMask = ActorFlags::FromInt(args[5]);
 				}
 
 				DWORD wallMask = ML_BLOCKEVERYTHING | ML_BLOCKHITSCAN;
@@ -5771,11 +5820,10 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 					wallMask = args[6];
 				}
 
-				bool forceTID = 0;
+				int flags = 0;
 				if (argCount >= 8)
 				{
-					if (args[7] != 0)
-						forceTID = 1;
+					flags = args[7];
 				}
 
 				AActor* pickedActor = P_LinePickActor(actor, args[1] << 16, args[3], args[2] << 16, actorMask, wallMask);
@@ -5783,14 +5831,18 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 					return 0;
 				}
 
-				if (!(forceTID) && (args[4] == 0) && (pickedActor->tid == 0))
+				if (!(flags & PICKAF_FORCETID) && (args[4] == 0) && (pickedActor->tid == 0))
 					return 0;
 
-				if ((pickedActor->tid == 0) || (forceTID))
+				if ((pickedActor->tid == 0) || (flags & PICKAF_FORCETID))
 				{
 					pickedActor->RemoveFromHash();
 					pickedActor->tid = args[4];
 					pickedActor->AddToHash();
+				}
+				if (flags & PICKAF_RETURNTID)
+				{
+					return pickedActor->tid;
 				}
 				return 1;
 			}
@@ -5864,6 +5916,8 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 			const char *statename = argCount > 6 ? FBehavior::StaticLookupString(args[6]) : "";
 			bool exact = argCount > 7 ? !!args[7] : false;
 			fixed_t heightoffset = argCount > 8 ? args[8] : 0;
+			fixed_t radiusoffset = argCount > 9 ? args[9] : 0;
+			fixed_t pitch = argCount > 10 ? args[10] : 0;
 
 			FState *state = argCount > 6 ? activator->GetClass()->ActorInfo->FindStateByString(statename, exact) : 0;
 
@@ -5881,7 +5935,7 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 			if (!reference)
 				return false;
 
-			if (P_Thing_Warp(activator, reference, xofs, yofs, zofs, angle, flags, heightoffset))
+			if (P_Thing_Warp(activator, reference, xofs, yofs, zofs, angle, flags, heightoffset, radiusoffset, pitch))
 			{
 				if (state && argCount > 6)
 				{
@@ -5891,10 +5945,47 @@ doplaysound:			if (funcIndex == ACSF_PlayActorSound)
 			}
 			return false;
 		}
+		case ACSF_GetMaxInventory:
+			actor = SingleActorFromTID(args[0], activator);
+			if (actor != NULL)
+			{
+				return CheckInventory(actor, FBehavior::StaticLookupString(args[1]), true);
+			}
+			break;
+
+		case ACSF_SetSectorDamage:
+			if (argCount >= 2)
+			{
+				FSectorTagIterator it(args[0]);
+				int s;
+				while ((s = it.Next()) >= 0)
+				{
+					sector_t *sec = &sectors[s];
+
+					sec->damageamount = args[1];
+					sec->damagetype = argCount >= 3 ? FName(FBehavior::StaticLookupString(args[2])) : FName(NAME_None);
+					sec->damageinterval = argCount >= 4 ? clamp(args[3], 1, INT_MAX) : 32;
+					sec->leakydamage = argCount >= 5 ? args[4] : 0;
+				}
+			}
+			break;
+
+		case ACSF_SetSectorTerrain:
+			if (argCount >= 3)
+			{
+				int terrain = P_FindTerrain(FBehavior::StaticLookupString(args[2]));
+				FSectorTagIterator it(args[0]);
+				int s;
+				while ((s = it.Next()) >= 0)
+				{
+					sectors[s].terrainnum[args[1]] = terrain;
+				}
+			}
 
 		default:
 			break;
 	}
+
 
 	return 0;
 }
@@ -7831,7 +7922,7 @@ scriptwait:
 						}
 						break;
 					}
-					msg->SetClipRect(ClipRectLeft, ClipRectTop, ClipRectWidth, ClipRectHeight);
+					msg->SetClipRect(ClipRectLeft, ClipRectTop, ClipRectWidth, ClipRectHeight, HandleAspect);
 					if (WrapWidth != 0)
 					{
 						msg->SetWrapWidth(WrapWidth);
@@ -8314,17 +8405,17 @@ scriptwait:
 			break;
 
 		case PCD_CHECKINVENTORY:
-			STACK(1) = CheckInventory (activator, FBehavior::StaticLookupString (STACK(1)));
+			STACK(1) = CheckInventory (activator, FBehavior::StaticLookupString (STACK(1)), false);
 			break;
 
 		case PCD_CHECKACTORINVENTORY:
 			STACK(2) = CheckInventory (SingleActorFromTID(STACK(2), NULL),
-										FBehavior::StaticLookupString (STACK(1)));
+										FBehavior::StaticLookupString (STACK(1)), false);
 			sp--;
 			break;
 
 		case PCD_CHECKINVENTORYDIRECT:
-			PushToStack (CheckInventory (activator, FBehavior::StaticLookupString (TAGSTR(uallong(pc[0])))));
+			PushToStack (CheckInventory (activator, FBehavior::StaticLookupString (TAGSTR(uallong(pc[0]))), false));
 			pc += 1;
 			break;
 
@@ -9443,6 +9534,7 @@ DLevelScript::DLevelScript (AActor *who, line_t *where, int num, const ScriptPtr
 	activefont = SmallFont;
 	hudwidth = hudheight = 0;
 	ClipRectLeft = ClipRectTop = ClipRectWidth = ClipRectHeight = WrapWidth = 0;
+	HandleAspect = true;
 	state = SCRIPT_Running;
 
 	// Hexen waited one second before executing any open scripts. I didn't realize

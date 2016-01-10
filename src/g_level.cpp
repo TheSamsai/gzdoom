@@ -698,6 +698,13 @@ void G_DoCompleted (void)
 
 	gameaction = ga_nothing;
 
+	if (   gamestate == GS_DEMOSCREEN
+		|| gamestate == GS_FULLCONSOLE
+		|| gamestate == GS_STARTUP)
+	{
+		return;
+	}
+
 	if (gamestate == GS_TITLELEVEL)
 	{
 		level.MapName = nextlevel;
@@ -1225,6 +1232,7 @@ void G_FinishTravel ()
 			pawn->dropoffz = pawndup->dropoffz;
 			pawn->floorsector = pawndup->floorsector;
 			pawn->floorpic = pawndup->floorpic;
+			pawn->floorterrain = pawndup->floorterrain;
 			pawn->ceilingsector = pawndup->ceilingsector;
 			pawn->ceilingpic = pawndup->ceilingpic;
 			pawn->floorclip = pawndup->floorclip;
